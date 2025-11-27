@@ -1,0 +1,23 @@
+/* All styles are now using Tailwind CSS classes in App.jsx */
+/* This file is kept for potential future use */
+
+@layer utilities {
+  /* Custom scrollbar styling */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thumb-blue-300::-webkit-scrollbar-thumb {
+    background: #93c5fd;
+    border-radius: 3px;
+  }
+
+  .scrollbar-thumb-amber-300::-webkit-scrollbar-thumb {
+    background: #fcd34d;
+    border-radius: 3px;
+  }
+}

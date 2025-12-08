@@ -17,7 +17,6 @@ class TextProcessor:
             )
 
             # CRITICAL FIX: Load the model in half-precision (FP16)
-            # This ensures speed and proper model behavior for the weights saved by setup_models.py.
             self.model = T5ForConditionalGeneration.from_pretrained(
                 self.model_path,
                 local_files_only=True
@@ -29,7 +28,7 @@ class TextProcessor:
             raise
 
         # Define the patterns for simple non-word disfluencies (for Neutral/Formal modes)
-        self.disfluency_pattern = r"\b(umm+|uhh+|uh|um|you know|matlab|hmm+)\b"
+        self.disfluency_pattern = r"\b(umm+|uhh+|uh|um|matlab|hmm+)\b"
 
 
     # -------------------------------------------
@@ -57,7 +56,6 @@ class TextProcessor:
     def enforce_formal_cleanup(self, text):
         """
         Enforces expansion of common informal contractions for Formal mode only.
-        (Guaranteed fix for 'gonna' -> 'going to', etc.)
         """
         if not text:
             return ""
@@ -84,23 +82,28 @@ class TextProcessor:
         # ----------------------------
         t0 = time.time()
 
-        # Start with the raw input text
         text_for_t5 = raw_text 
 
-        # --- 1. MODE-SPECIFIC PRE-PROCESSING ---
+        # --- 1. MODE-SPECIFIC PRE-PROCESSING (Disfluency & Conversational Filler Removal) ---
         
-        # A. Remove simple disfluencies (umm, uh) for Neutral and Formal (Casual preserves them)
         if tone_mode in ["Neutral", "Formal"]:
-            # Use the defined disfluency pattern
+            # A. Remove simple disfluencies (umm, uh)
             text_for_t5 = re.sub(self.disfluency_pattern, "", text_for_t5, flags=re.IGNORECASE)
-        
-        # B. Enforce formal standards (contractions) only for Formal
-        if tone_mode == "Formal":
-            text_for_t5 = self.enforce_formal_cleanup(text_for_t5)
+            
+            # B. TARGETED CONVERSATIONAL FILLER REMOVAL (Removes 'like', 'so', 'i mean' in filler contexts)
+            # This is essential as T5 struggles with these words contextually.
+            text_for_t5 = re.sub(r"[\s,]+like[\s,]+", " ", text_for_t5, flags=re.IGNORECASE)
+            text_for_t5 = re.sub(r"^\s*like[\s,]*", "", text_for_t5, flags=re.IGNORECASE)
+            text_for_t5 = re.sub(r"[\s,]*like\s*$", "", text_for_t5, flags=re.IGNORECASE)
+            filler_list_conversational = r"\b(so, uh|i mean|i mean to say)\b"
+            text_for_t5 = re.sub(filler_list_conversational, "", text_for_t5, flags=re.IGNORECASE)
+            
+            # C. Enforce formal standards (contractions) only for Formal
+            if tone_mode == "Formal":
+                text_for_t5 = self.enforce_formal_cleanup(text_for_t5)
 
-        # C. Apply final structural cleanup (applies to all modes)
+        # 2. Apply final structural cleanup (applies to all modes)
         text_for_t5 = self.clean_punctuation(text_for_t5)
-        # Remove duplicated words
         text_for_t5 = re.sub(r'\b(\w+)( \1\b)+', r'\1', text_for_t5, flags=re.IGNORECASE)
 
         stats["cleaning_ms"] = (time.time() - t0) * 1000
@@ -115,24 +118,19 @@ class TextProcessor:
         if not sentences:
             return "", stats
 
-        # Define instruction set based on the three modes
+        # Define instruction set (Keys must match frontend mode names)
         instruction_map = {
-            # 1. Neutral: Uses a clear, direct instruction structure.
-            "Neutral": "Correct grammar and remove conversational fillers from the text: ",
-            
-            # 2. Formal: Uses the strong structure to enforce formal style and fixes.
-            "Formal": "Rewrite the text formally, fixing grammar, removing contractions, shorthand, and unnecessary conversational phrases: ",
-            
-            # 3. Casual: Uses a simple structure to fix grammar but PRESERVES style.
-            "Casual": "Fix the grammar and punctuation in the text. Do not change the informal style or remove fillers: ",
+            "Neutral": "Correct grammar and remove conversational fillers from the text:",
+            "Formal": "Rewrite the text professionally, elevating vocabulary, combining short sentences, ensuring politeness, and fixing all grammar and punctuation:",
+            "Casual": "Fix the grammar and punctuation in the text. Do not change the informal style or remove fillers:",
         }
         
         instruction = instruction_map.get(tone_mode, instruction_map["Neutral"])
 
         prompts = []
         for sent in sentences:
-            # New, simpler template structure (Removes the confusing final quotes from the prompt itself)
-            prompts.append(f"{instruction} {sent}") # No quotes around {sent} in the prompt
+            # Use the simplified, direct instruction structure
+            prompts.append(f"{instruction} {sent}") 
 
         inputs = self.tokenizer(
             prompts,
@@ -140,9 +138,6 @@ class TextProcessor:
             padding=True,
             truncation=True
         )
-        
-        # Move inputs to the correct device (CPU/GPU) if needed. If only running on CPU, this is fine.
-        # inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         outputs = self.model.generate(
             inputs.input_ids,
@@ -154,19 +149,29 @@ class TextProcessor:
         )
 
         # ----------------------------
-        # PHASE 3: FINAL DECODE & CLEANUP
+        # PHASE 3: FINAL DECODE & CLEANUP (Stripping Instructions/Quotes)
         # ----------------------------
         
         corrected_sentences = self.tokenizer.batch_decode(
             outputs, skip_special_tokens=True
         )
 
+        # Get the instruction prefix used for stripping
+        instruction_to_strip = instruction_map.get(tone_mode, instruction_map["Neutral"])
+
         cleaned_output_parts = []
         for sentence in corrected_sentences:
-            # 1. Strip external quotes/whitespace (Fixes the quote issue)
-            sentence = sentence.strip().strip('"')
             
-            # 2. Ensure the sentence starts with a capital letter (Fixes capitalization)
+            # 1. STRIP THE UNWANTED INSTRUCTION PREFIX (Fixes the print issue)
+            # This is the crucial code block you provided for stripping the instruction text.
+            if sentence.strip().startswith(instruction_to_strip.strip()):
+                # Only remove the part that matches the instruction string
+                sentence = sentence[len(instruction_to_strip):]
+
+            # 2. Strip external quotes/whitespace (Fixes the quote issue)
+            sentence = sentence.strip().strip('"').strip()
+            
+            # 3. Ensure the sentence starts with a capital letter (Fixes capitalization)
             if sentence:
                 sentence = sentence[0].upper() + sentence[1:]
                 
